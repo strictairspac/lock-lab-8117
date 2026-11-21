@@ -1,11 +1,13 @@
 from sqlalchemy import select,func
 from src.config.database import Session,Base,engine
 from src.models.entities import User,Sample,Transfer,Trial
+from src.services.receipts import ensure_schema as ensure_receipt_schema
 from src.utils.security import password_hash
 
 def seed():
     Base.metadata.create_all(engine)
     with Session() as db:
+        ensure_receipt_schema(db);db.commit()
         for role in ('admin','operator','viewer'):
             email=role+'@qingyu.test'
             if not db.scalar(select(User).where(User.email==email)):

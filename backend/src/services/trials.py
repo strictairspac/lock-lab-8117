@@ -6,19 +6,27 @@ from src.config.settings import REDIS_URL
 from src.models.entities import Trial,Transfer,Sample,TrialBalance
 from src.utils.serialization import record
 from .common import save
+from . import receipts
 from src.constants.enums import RUN_STATES
 queue=Redis.from_url(REDIS_URL,decode_responses=True)
 def listing(db): return [record(x) for x in db.scalars(select(Trial).order_by(Trial.id.desc()))]
 def detail(db,ident):
     obj=db.get(Trial,ident)
     if not obj: raise HTTPException(404,'演练不存在')
-    return record(obj)
+    data=record(obj)
+    data['ledger'],data['receipts']=receipts.receipts_for_trial(db,ident)
+    data['receipt_migration']=receipts.brief(db)
+    return data
 def create(db,data,user):
     transfer=db.get(Transfer,data.transfer_id)
     if not transfer: raise HTTPException(404,'流转申请不存在')
     sample=db.get(Sample,transfer.sample_id)
     if transfer.quantity>sample.quantity: raise HTTPException(422,'当前样本量不足')
-    obj=Trial(**data.model_dump(),status=RUN_STATES[0])
+    obj=Trial(**data.model_dump(),status=RUN_STATES[0],created_at=receipts.utc_now())
+    obj.period=receipts.period_of(obj.created_at)
+    # Create the month partition up front: doing it later inside a receipt transaction
+    # would block on concurrent inserts and stall the trial.
+    receipts.ensure_partition_ddl(obj.period)
     result=save(db,obj,user,'并发演练入队 '+data.name)
     db.add(TrialBalance(trial_id=obj.id,remaining=sample.quantity,received=0));db.commit()
     try: queue.rpush('locklab:queue',str(obj.id))
